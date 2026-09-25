@@ -610,6 +610,7 @@
     <Compile Include="$(MSBuildThisFileDirectory)System\MemoryExtensions.MinMax.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)System\MemoryExtensions.Trim.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)System\MemoryExtensions.Trim.Utf8.cs" />
+    <Compile Include="$(MSBuildThisFileDirectory)System\MemoryExtensions.Xor.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)System\MethodAccessException.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)System\MidpointRounding.cs" />
     <Compile Include="$(MSBuildThisFileDirectory)System\MissingFieldException.cs" />
