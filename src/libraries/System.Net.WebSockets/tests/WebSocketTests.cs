@@ -1,7 +1,11 @@
 // Licensed to the .NET Foundation under one or more agreements.
 // The .NET Foundation licenses this file to you under the MIT license.
 
+using System.Buffers.Binary;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
+using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
 using Xunit;
@@ -182,6 +186,81 @@ namespace System.Net.WebSockets.Tests
                client.SendAsync(Memory<byte>.Empty, WebSocketMessageType.Binary, WebSocketMessageFlags.EndOfMessage, default));
         }
 
+        public static IEnumerable<object[]> SendFrameLengths()
+        {
+            int[] lengths = Enumerable.Range(0, 17).Concat(new[]
+            {
+                31, 32, 33, 63, 64, 65, 125, 126, 127, 128, 129,
+                255, 256, 257, 4095, 4096, 4097, 65535, 65536, 65537,
+                Vector<byte>.Count - 1, Vector<byte>.Count, Vector<byte>.Count + 1,
+                2 * Vector<byte>.Count - 1, 2 * Vector<byte>.Count, 2 * Vector<byte>.Count + 1
+            }).Distinct().ToArray();
+
+            foreach (int length in lengths)
+            foreach (bool isServer in new[] { false, true })
+            foreach (bool cancelable in new[] { false, true })
+                yield return new object[] { length, isServer, cancelable };
+        }
+
+        [Theory]
+        [MemberData(nameof(SendFrameLengths))]
+        public async Task SendAsync_WritesFrameWithoutChangingSource(int length, bool isServer, bool cancelable)
+        {
+            using WebSocketTestStream stream = new();
+            using WebSocket socket = WebSocket.CreateFromStream(stream, isServer, null, Timeout.InfiniteTimeSpan);
+            using CancellationTokenSource cts = new();
+            CancellationToken token = cancelable ? cts.Token : default;
+
+            foreach (int offset in new[] { 0, 1, 3, 17, 31, 63 })
+            {
+                byte[] source = new byte[offset + length + 16];
+                new Random(42).NextBytes(source);
+                byte[] original = (byte[])source.Clone();
+
+                // Exercise an initial fragment, a continuation and a new complete message.
+                for (int frame = 0; frame < 3; frame++)
+                {
+                    await socket.SendAsync(source.AsMemory(offset, length), WebSocketMessageType.Binary, frame != 0, token);
+                    AssertSentFrame(stream.Remote.NextAvailableBytes, original.AsSpan(offset, length), isServer, frame);
+                    Assert.Equal(original, source);
+                    stream.Remote.Clear();
+                }
+            }
+        }
+
+        private static void AssertSentFrame(ReadOnlySpan<byte> frame, ReadOnlySpan<byte> payload, bool isServer, int fragment)
+        {
+            Assert.Equal(fragment == 0 ? 0x02 : fragment == 1 ? 0x80 : 0x82, frame[0]);
+            Assert.Equal(!isServer, (frame[1] & 0x80) != 0);
+            int lengthCode = frame[1] & 0x7F;
+            int headerLength = 2;
+            ulong length = (ulong)lengthCode;
+            if (lengthCode == 126)
+            {
+                length = BinaryPrimitives.ReadUInt16BigEndian(frame.Slice(2));
+                headerLength += 2;
+            }
+            else if (lengthCode == 127)
+            {
+                length = BinaryPrimitives.ReadUInt64BigEndian(frame.Slice(2));
+                headerLength += 8;
+            }
+
+            Assert.Equal((ulong)payload.Length, length);
+            int maskOffset = headerLength;
+            if (!isServer)
+                headerLength += 4;
+
+            Assert.Equal(headerLength + payload.Length, frame.Length);
+            byte[] decoded = frame.Slice(headerLength).ToArray();
+            for (int i = 0; i < decoded.Length; i++)
+            {
+                if (!isServer)
+                    decoded[i] ^= frame[maskOffset + (i & 3)];
+            }
+            Assert.True(payload.SequenceEqual(decoded));
+        }
+
         [Fact]
         public async Task SendAsync_FlushAsyncSyncFaulted_WrapsExceptionInWebSocketException()
         {
@@ -197,6 +276,63 @@ namespace System.Net.WebSockets.Tests
 
             Assert.Equal(WebSocketError.ConnectionClosedPrematurely, ex.WebSocketErrorCode);
             Assert.Same(underlying, ex.InnerException);
+        }
+
+        public static IEnumerable<object[]> MaskedReceiveSizes()
+        {
+            foreach (int size in new[] { 1, 3, 5, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 125, 126, 127, 257, 4093, 65537 })
+            foreach (bool compressed in new[] { false, true })
+            foreach (bool cancelable in new[] { false, true })
+                yield return new object[] { size, compressed, cancelable };
+        }
+
+        [Theory]
+        [MemberData(nameof(MaskedReceiveSizes))]
+        public async Task ReceiveAsync_MaskedFragments_PreservesMaskPosition(int receiveSize, bool compressed, bool cancelable)
+        {
+            using WebSocketTestStream stream = new();
+            using WebSocket client = WebSocket.CreateFromStream(stream, new WebSocketCreationOptions
+            {
+                KeepAliveInterval = Timeout.InfiniteTimeSpan,
+                DangerousDeflateOptions = compressed ? new WebSocketDeflateOptions() : null
+            });
+            using WebSocket server = WebSocket.CreateFromStream(stream.Remote, new WebSocketCreationOptions
+            {
+                IsServer = true,
+                KeepAliveInterval = Timeout.InfiniteTimeSpan,
+                DangerousDeflateOptions = compressed ? new WebSocketDeflateOptions() : null
+            });
+            using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+            CancellationToken token = cancelable ? cts.Token : default;
+            byte[] payload = new byte[receiveSize <= 7 ? 521 : 65573];
+            new Random(42).NextBytes(payload);
+
+            foreach (int offset in new[] { 0, 1, 3 })
+            {
+                // Each frame gets a new mask; partial receives must advance its index.
+                await client.SendAsync(payload.AsMemory(0, 31), WebSocketMessageType.Binary, false, token);
+                await client.SendAsync(ReadOnlyMemory<byte>.Empty, WebSocketMessageType.Binary, false, token);
+                await client.SendAsync(payload.AsMemory(31, 8), WebSocketMessageType.Binary, false, token);
+                await client.SendAsync(payload.AsMemory(39), WebSocketMessageType.Binary, true, token);
+
+                stream.Remote.DelayForNextRead = TimeSpan.FromMilliseconds(1);
+                byte[] buffer = new byte[offset + receiveSize + 16];
+                int consumed = 0;
+                ValueWebSocketReceiveResult result;
+                do
+                {
+                    buffer.AsSpan().Fill(0xCC);
+                    result = await server.ReceiveAsync(buffer.AsMemory(offset, receiveSize), token);
+                    Assert.Equal(WebSocketMessageType.Binary, result.MessageType);
+                    Assert.True(payload.AsSpan(consumed, result.Count).SequenceEqual(buffer.AsSpan(offset, result.Count)));
+                    Assert.Equal(-1, buffer.AsSpan(0, offset).IndexOfAnyExcept((byte)0xCC));
+                    Assert.Equal(-1, buffer.AsSpan(offset + result.Count).IndexOfAnyExcept((byte)0xCC));
+                    consumed += result.Count;
+                }
+                while (!result.EndOfMessage);
+
+                Assert.Equal(payload.Length, consumed);
+            }
         }
 
         [Fact]
