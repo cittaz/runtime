@@ -558,6 +558,8 @@ namespace System
         public static bool TryWrite<TArg0, TArg1, TArg2>(this System.Span<char> destination, System.IFormatProvider? provider, System.Text.CompositeFormat format, out int charsWritten, TArg0 arg0, TArg1 arg1, TArg2 arg2) { throw null; }
         public static bool TryWrite(this Span<char> destination, System.IFormatProvider? provider, System.Text.CompositeFormat format, out int charsWritten, params object?[] args) { throw null; }
         public static bool TryWrite(this Span<char> destination, System.IFormatProvider? provider, System.Text.CompositeFormat format, out int charsWritten, params System.ReadOnlySpan<object?> args) { throw null; }
+        public static void Xor<T>(this System.ReadOnlySpan<T> x, System.ReadOnlySpan<T> y, System.Span<T> destination) where T : System.Numerics.IBitwiseOperators<T, T, T> { }
+        public static void Xor<T>(this System.ReadOnlySpan<T> x, T y, System.Span<T> destination) where T : System.Numerics.IBitwiseOperators<T, T, T> { }
         public ref struct SpanSplitEnumerator<T> : System.Collections.Generic.IEnumerator<System.Range>, System.Collections.IEnumerator, System.IDisposable where T : System.IEquatable<T>
         {
             private object _dummy;
