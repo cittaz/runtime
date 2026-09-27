@@ -60,6 +60,48 @@ namespace System.SpanTests
             TestXorNumeric<double>(length);
         }
 
+        [Theory]
+        [InlineData(31)]
+        [InlineData(32)]
+        [InlineData(33)]
+        [InlineData(63)]
+        [InlineData(64)]
+        [InlineData(65)]
+        [InlineData(127)]
+        [InlineData(128)]
+        [InlineData(129)]
+        [InlineData(255)]
+        [InlineData(256)]
+        [InlineData(257)]
+        [InlineData(511)]
+        [InlineData(512)]
+        [InlineData(513)]
+        [InlineData(1023)]
+        [InlineData(1024)]
+        [InlineData(1025)]
+        public static void Xor_ScalarInPlace_AllByteOffsets(int length)
+        {
+            const int Mask = unchecked((int)0xA1B2C3D4);
+            Random random = new(42);
+            for (int offset = 0; offset < 64; offset++)
+            {
+                byte[] actual = new byte[length * sizeof(int) + 128];
+                random.NextBytes(actual);
+                byte[] expected = (byte[])actual.Clone();
+                Span<int> expectedValues = MemoryMarshal.Cast<byte, int>(expected.AsSpan(offset, length * sizeof(int)));
+                for (int i = 0; i < expectedValues.Length; i++)
+                {
+                    expectedValues[i] ^= Mask;
+                }
+
+                // Includes byte-misaligned int spans which cannot be aligned by advancing
+                // whole elements, as well as every possible vector-alignment prefix.
+                Span<int> values = MemoryMarshal.Cast<byte, int>(actual.AsSpan(offset, length * sizeof(int)));
+                MemoryExtensions.Xor<int>(values, Mask, values);
+                Assert.Equal(expected, actual);
+            }
+        }
+
         private static void TestXorNumeric<T>(int length) where T : INumberBase<T>, IBitwiseOperators<T, T, T>
         {
             T[] x = new T[length + 8];
