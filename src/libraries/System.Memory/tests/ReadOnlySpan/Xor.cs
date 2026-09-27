@@ -102,6 +102,79 @@ namespace System.SpanTests
             }
         }
 
+        [Theory]
+        [InlineData(31)]
+        [InlineData(32)]
+        [InlineData(33)]
+        [InlineData(63)]
+        [InlineData(64)]
+        [InlineData(65)]
+        [InlineData(127)]
+        [InlineData(128)]
+        [InlineData(129)]
+        [InlineData(255)]
+        [InlineData(256)]
+        [InlineData(257)]
+        [InlineData(511)]
+        [InlineData(512)]
+        [InlineData(513)]
+        [InlineData(1023)]
+        [InlineData(1024)]
+        [InlineData(1025)]
+        public static void Xor_IndependentByteOffsets_PreservesInputsAndGuards(int length)
+        {
+            const int Mask = unchecked((int)0xA1B2C3D4);
+            Random random = new(42);
+            for (int xOffset = 0; xOffset < 64; xOffset++)
+            {
+                int yOffset = (17 * xOffset + 7) % 64;
+                int destinationOffset = (29 * xOffset + 11) % 64;
+                byte[] x = new byte[length * sizeof(int) + 128];
+                byte[] y = new byte[x.Length];
+                byte[] destination = new byte[x.Length];
+                random.NextBytes(x);
+                random.NextBytes(y);
+                random.NextBytes(destination);
+                byte[] originalX = (byte[])x.Clone();
+                byte[] originalY = (byte[])y.Clone();
+                ReadOnlySpan<int> xValues = MemoryMarshal.Cast<byte, int>(x.AsSpan(xOffset, length * sizeof(int)));
+                ReadOnlySpan<int> yValues = MemoryMarshal.Cast<byte, int>(y.AsSpan(yOffset, length * sizeof(int)));
+
+                // Vary each span's byte alignment independently and include unused destination
+                // elements. Compare whole buffers to detect writes to inputs or surrounding guards.
+                byte[] expected = (byte[])destination.Clone();
+                Span<int> expectedValues = MemoryMarshal.Cast<byte, int>(expected.AsSpan(destinationOffset));
+                for (int i = 0; i < length; i++)
+                    expectedValues[i] = xValues[i] ^ yValues[i];
+                MemoryExtensions.Xor(xValues, yValues, MemoryMarshal.Cast<byte, int>(destination.AsSpan(destinationOffset)));
+                Assert.Equal(expected, destination);
+
+                for (int i = 0; i < length; i++)
+                    expectedValues[i] = xValues[i] ^ Mask;
+                MemoryExtensions.Xor(xValues, Mask, MemoryMarshal.Cast<byte, int>(destination.AsSpan(destinationOffset)));
+                Assert.Equal(expected, destination);
+                Assert.Equal(originalX, x);
+                Assert.Equal(originalY, y);
+
+                // The destination can also start at either input, including byte-misaligned spans.
+                foreach (bool destinationIsX in new[] { true, false })
+                {
+                    byte[] actual = (byte[])(destinationIsX ? x : y).Clone();
+                    int offset = destinationIsX ? xOffset : yOffset;
+                    expected = (byte[])actual.Clone();
+                    expectedValues = MemoryMarshal.Cast<byte, int>(expected.AsSpan(offset));
+                    for (int i = 0; i < length; i++)
+                        expectedValues[i] = xValues[i] ^ yValues[i];
+                    ReadOnlySpan<int> aliasedInput = MemoryMarshal.Cast<byte, int>(actual.AsSpan(offset, length * sizeof(int)));
+                    MemoryExtensions.Xor(destinationIsX ? aliasedInput : xValues, destinationIsX ? yValues : aliasedInput,
+                        MemoryMarshal.Cast<byte, int>(actual.AsSpan(offset)));
+                    Assert.Equal(expected, actual);
+                }
+                Assert.Equal(originalX, x);
+                Assert.Equal(originalY, y);
+            }
+        }
+
         private static void TestXorNumeric<T>(int length) where T : INumberBase<T>, IBitwiseOperators<T, T, T>
         {
             T[] x = new T[length + 8];
