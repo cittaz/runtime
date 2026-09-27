@@ -175,6 +175,112 @@ namespace System.SpanTests
             }
         }
 
+        [Theory]
+        [InlineData(false)]
+        [InlineData(true)]
+        public static void Xor_ByteAndHalf_TailsOffsetsAndAliases(bool half)
+        {
+            if (half)
+                TestXorRawBits<Half>();
+            else
+                TestXorRawBits<byte>();
+        }
+
+        private static void TestXorRawBits<T>() where T : unmanaged, IBitwiseOperators<T, T, T>
+        {
+            // Exercise every short tail, each SIMD/unroll boundary, independently unaligned
+            // inputs, and all permitted destination aliases. Compare bits, including Half NaNs.
+            int elementSize = Marshal.SizeOf<T>();
+            Random random = new(42);
+            for (int test = 0; test < 156; test++)
+            {
+                int length = test <= 146 ? test : test switch
+                {
+                    147 => 255, 148 => 256, 149 => 257,
+                    150 => 511, 151 => 512, 152 => 513,
+                    153 => 1023, 154 => 1024, _ => 1025,
+                };
+                for (int offset = 0; offset < 64; offset++)
+                {
+                    int yOffset = (17 * offset + 7) % 64;
+                    int dOffset = (29 * offset + 11) % 64;
+                    byte[] x = new byte[length * elementSize + 128];
+                    byte[] y = new byte[x.Length];
+                    byte[] output = new byte[x.Length];
+                    random.NextBytes(x);
+                    random.NextBytes(y);
+                    random.NextBytes(output);
+                    byte[] originalX = (byte[])x.Clone();
+                    byte[] originalY = (byte[])y.Clone();
+                    ReadOnlySpan<T> xValues = MemoryMarshal.Cast<byte, T>(x.AsSpan(offset, length * elementSize));
+                    ReadOnlySpan<T> yValues = MemoryMarshal.Cast<byte, T>(y.AsSpan(yOffset, length * elementSize));
+                    T mask = MemoryMarshal.Read<T>(y);
+
+                    for (int mode = 0; mode < 6; mode++)
+                    {
+                        bool scalar = mode >= 4;
+                        bool aliasX = mode is 1 or 3 or 5;
+                        bool aliasY = mode is 2 or 3;
+                        int start = aliasX ? offset : aliasY ? yOffset : dOffset;
+                        byte[] actual = (byte[])(aliasX ? x : aliasY ? y : output).Clone();
+                        byte[] expected = (byte[])actual.Clone();
+                        Span<T> expectedValues = MemoryMarshal.Cast<byte, T>(expected.AsSpan(start));
+                        for (int i = 0; i < length; i++)
+                            expectedValues[i] = xValues[i] ^ (scalar ? mask : mode == 3 ? xValues[i] : yValues[i]);
+                        Span<T> destination = MemoryMarshal.Cast<byte, T>(actual.AsSpan(start));
+                        ReadOnlySpan<T> first = aliasX ? destination.Slice(0, length) : xValues;
+                        if (scalar)
+                            MemoryExtensions.Xor(first, mask, destination);
+                        else
+                            MemoryExtensions.Xor(first, aliasY ? destination.Slice(0, length) : yValues, destination);
+                        Assert.Equal(expected, actual);
+                        Assert.Equal(originalX, x);
+                        Assert.Equal(originalY, y);
+                    }
+                }
+            }
+        }
+
+        [Fact]
+        public static void Xor_Half_AllBitPatterns()
+        {
+            Half[] x = new Half[65536];
+            Half[] y = new Half[x.Length];
+            Half[] actual = new Half[x.Length];
+            for (int i = 0; i < x.Length; i++)
+            {
+                x[i] = BitConverter.UInt16BitsToHalf((ushort)i);
+                y[i] = BitConverter.UInt16BitsToHalf((ushort)(i * 17 + 7));
+            }
+            MemoryExtensions.Xor<Half>(x, y, actual);
+            for (int i = 0; i < x.Length; i++)
+                Assert.Equal((ushort)(i ^ (ushort)(i * 17 + 7)), BitConverter.HalfToUInt16Bits(actual[i]));
+            MemoryExtensions.Xor<Half>(x, BitConverter.UInt16BitsToHalf(0xFE01), actual);
+            for (int i = 0; i < x.Length; i++)
+                Assert.Equal((ushort)(i ^ 0xFE01), BitConverter.HalfToUInt16Bits(actual[i]));
+        }
+
+        [Fact]
+        public static void Xor_Half_ValidationBeforeWrites()
+        {
+            Half[] buffer = new Half[130];
+            for (int i = 0; i < buffer.Length; i++)
+                buffer[i] = BitConverter.UInt16BitsToHalf((ushort)(i * 73));
+            byte[] original = MemoryMarshal.AsBytes(buffer.AsSpan()).ToArray();
+            Half[] other = new Half[128];
+            Half mask = (Half)42;
+            Assert.Throws<ArgumentException>(() => MemoryExtensions.Xor<Half>(buffer.AsSpan(0, 128), new Half[127], buffer));
+            Assert.Throws<ArgumentException>(() => MemoryExtensions.Xor<Half>(other, other, buffer.AsSpan(0, 127)));
+            Assert.Throws<ArgumentException>(() => MemoryExtensions.Xor<Half>(other, mask, buffer.AsSpan(0, 127)));
+            Assert.Throws<ArgumentException>(() => MemoryExtensions.Xor<Half>(buffer.AsSpan(0, 128), other, buffer.AsSpan(1)));
+            Assert.Throws<ArgumentException>(() => MemoryExtensions.Xor<Half>(other, buffer.AsSpan(1, 128), buffer));
+            Assert.Throws<ArgumentException>(() => MemoryExtensions.Xor<Half>(buffer.AsSpan(0, 128), mask, buffer.AsSpan(1)));
+            Assert.Throws<ArgumentException>(() => MemoryExtensions.Xor<Half>(buffer.AsSpan(1, 128), mask, buffer));
+            Assert.Throws<ArgumentException>(() => MemoryExtensions.Xor<Half>(new Half[2], buffer.AsSpan(128), buffer));
+            Assert.Throws<ArgumentException>(() => MemoryExtensions.Xor<Half>(buffer.AsSpan(128), mask, buffer));
+            Assert.Equal(original, MemoryMarshal.AsBytes(buffer.AsSpan()).ToArray());
+        }
+
         private static void TestXorNumeric<T>(int length) where T : INumberBase<T>, IBitwiseOperators<T, T, T>
         {
             T[] x = new T[length + 8];

@@ -26,6 +26,22 @@ namespace System
         public static void Xor<T>(this ReadOnlySpan<T> x, ReadOnlySpan<T> y, Span<T> destination)
             where T : IBitwiseOperators<T, T, T>
         {
+            // Amortize the shared short implementation's call cost over at least two vectors.
+            if (typeof(T) == typeof(Half) && Vector128.IsHardwareAccelerated && x.Length >= 2 * Vector128<short>.Count)
+            {
+                unsafe
+                {
+                    // SAFETY: The type check proves T is Half, which has the same size as short
+                    // and no GC references. Reinterpretation preserves each span's length and
+                    // starting address, including empty spans; it does not read any elements.
+                    // Xor<short> performs all length and overlap validation before writing.
+                    Xor(MemoryMarshal.CreateReadOnlySpan(ref Unsafe.As<T, short>(ref MemoryMarshal.GetReference(x)), x.Length),
+                        MemoryMarshal.CreateReadOnlySpan(ref Unsafe.As<T, short>(ref MemoryMarshal.GetReference(y)), y.Length),
+                        MemoryMarshal.CreateSpan(ref Unsafe.As<T, short>(ref MemoryMarshal.GetReference(destination)), destination.Length));
+                }
+                return;
+            }
+
             if (x.Length != y.Length)
             {
                 ThrowHelper.ThrowArgumentException(ExceptionResource.Argument_SpansMustHaveSameLength);
@@ -160,6 +176,20 @@ namespace System
                 }
             }
 
+            // A zero- or one-byte tail does not benefit from setting up wider XORs.
+            if (typeof(T) == typeof(byte) && x.Length - i >= 2)
+            {
+                unsafe
+                {
+                    // SAFETY: T is exactly byte. Reinterpretation preserves length and
+                    // references without reading data. The helper uses checked span accesses.
+                    XorByteTail(MemoryMarshal.CreateReadOnlySpan(ref Unsafe.As<T, byte>(ref MemoryMarshal.GetReference(x)), x.Length).Slice(i),
+                        MemoryMarshal.CreateReadOnlySpan(ref Unsafe.As<T, byte>(ref MemoryMarshal.GetReference(y)), y.Length).Slice(i),
+                        MemoryMarshal.CreateSpan(ref Unsafe.As<T, byte>(ref MemoryMarshal.GetReference(destination)), destination.Length).Slice(i));
+                }
+                return;
+            }
+
             // Each element is processed once, including when an input is the destination.
             for (; i < x.Length; i++)
             {
@@ -182,6 +212,22 @@ namespace System
         public static void Xor<T>(this ReadOnlySpan<T> x, T y, Span<T> destination)
             where T : IBitwiseOperators<T, T, T>
         {
+            // Amortize the shared short implementation's call cost over at least two vectors.
+            if (typeof(T) == typeof(Half) && Vector128.IsHardwareAccelerated && x.Length >= 2 * Vector128<short>.Count)
+            {
+                unsafe
+                {
+                    // SAFETY: The type check proves T is Half, which has the same size as short
+                    // and no GC references. Reinterpretation preserves each span's length and
+                    // starting address, including empty spans; it does not read any elements.
+                    // Xor<short> performs all length and overlap validation before writing.
+                    Xor(MemoryMarshal.CreateReadOnlySpan(ref Unsafe.As<T, short>(ref MemoryMarshal.GetReference(x)), x.Length),
+                        BitConverter.HalfToInt16Bits((Half)(object)y),
+                        MemoryMarshal.CreateSpan(ref Unsafe.As<T, short>(ref MemoryMarshal.GetReference(destination)), destination.Length));
+                }
+                return;
+            }
+
             ValidateXorDestination(x, destination);
 
             // Reserve the specialized path for a full unrolled block. Small inputs
@@ -321,6 +367,20 @@ namespace System
                 }
             }
 
+            // A zero- or one-byte tail does not benefit from setting up wider XORs.
+            if (typeof(T) == typeof(byte) && x.Length - i >= 2)
+            {
+                unsafe
+                {
+                    // SAFETY: T is exactly byte. Reinterpretation preserves length and
+                    // references without reading data. The helper uses checked span accesses.
+                    XorByteTail(MemoryMarshal.CreateReadOnlySpan(ref Unsafe.As<T, byte>(ref MemoryMarshal.GetReference(x)), x.Length).Slice(i),
+                        (byte)(object)y,
+                        MemoryMarshal.CreateSpan(ref Unsafe.As<T, byte>(ref MemoryMarshal.GetReference(destination)), destination.Length).Slice(i));
+                }
+                return;
+            }
+
             for (; i < x.Length; i++)
             {
                 destination[i] = x[i] ^ y;
@@ -330,10 +390,20 @@ namespace System
         private static void XorInPlace<T>(Span<T> destination, T y)
             where T : IBitwiseOperators<T, T, T>
         {
-            if (Vector512.IsHardwareAccelerated && Vector512<T>.IsSupported && destination.Length >= Vector512<T>.Count)
+            // The public scalar overload only calls this helper for a full eight-vector
+            // block at the largest accelerated width. The saved ending lets that width
+            // finish the operation without falling through to smaller-width tails.
+            System.Diagnostics.Debug.Assert(Vector128.IsHardwareAccelerated && Vector128<T>.IsSupported);
+            System.Diagnostics.Debug.Assert(destination.Length >= 8 *
+                (Vector512.IsHardwareAccelerated && Vector512<T>.IsSupported ? Vector512<T>.Count :
+                 Vector256.IsHardwareAccelerated && Vector256<T>.IsSupported ? Vector256<T>.Count : Vector128<T>.Count));
+
+            if (Vector512.IsHardwareAccelerated && Vector512<T>.IsSupported)
             {
                 Vector512<T> value = Vector512.Create(y);
                 Span<T> originalDestination = destination;
+                // Save the original tail before any in-place writes.
+                Vector512<T> ending = Vector512.Create(destination.Slice(destination.Length - Vector512<T>.Count)) ^ value;
                 int alignmentOffset = GetXorAlignmentOffset(destination, 64, Vector512<T>.Count);
                 Vector512<T> beginning = default;
                 if (alignmentOffset != 0)
@@ -372,7 +442,7 @@ namespace System
                     destination = destination.Slice(8 * Vector512<T>.Count);
                 }
 
-                while (destination.Length >= Vector512<T>.Count)
+                while (destination.Length > Vector512<T>.Count)
                 {
                     Span<T> block = destination.Slice(0, Vector512<T>.Count);
                     (Vector512.Create(block) ^ value).CopyTo(block);
@@ -385,12 +455,16 @@ namespace System
                     // overlap with its precomputed result rather than XORing it twice.
                     beginning.CopyTo(originalDestination);
                 }
+                ending.CopyTo(originalDestination.Slice(originalDestination.Length - Vector512<T>.Count));
+                return;
             }
 
-            if (Vector256.IsHardwareAccelerated && Vector256<T>.IsSupported && destination.Length >= Vector256<T>.Count)
+            if (Vector256.IsHardwareAccelerated && Vector256<T>.IsSupported)
             {
                 Vector256<T> value = Vector256.Create(y);
                 Span<T> originalDestination = destination;
+                // Save the original tail before any in-place writes.
+                Vector256<T> ending = Vector256.Create(destination.Slice(destination.Length - Vector256<T>.Count)) ^ value;
                 int alignmentOffset = GetXorAlignmentOffset(destination, 32, Vector256<T>.Count);
                 Vector256<T> beginning = default;
                 if (alignmentOffset != 0)
@@ -432,7 +506,7 @@ namespace System
                     }
                 }
 
-                while (destination.Length >= Vector256<T>.Count)
+                while (destination.Length > Vector256<T>.Count)
                 {
                     Span<T> block = destination.Slice(0, Vector256<T>.Count);
                     (Vector256.Create(block) ^ value).CopyTo(block);
@@ -445,12 +519,16 @@ namespace System
                     // overlap with its precomputed result rather than XORing it twice.
                     beginning.CopyTo(originalDestination);
                 }
+                ending.CopyTo(originalDestination.Slice(originalDestination.Length - Vector256<T>.Count));
+                return;
             }
 
-            if (Vector128.IsHardwareAccelerated && Vector128<T>.IsSupported && destination.Length >= Vector128<T>.Count)
+            if (Vector128.IsHardwareAccelerated && Vector128<T>.IsSupported)
             {
                 Vector128<T> value = Vector128.Create(y);
                 Span<T> originalDestination = destination;
+                // Save the original tail before any in-place writes.
+                Vector128<T> ending = Vector128.Create(destination.Slice(destination.Length - Vector128<T>.Count)) ^ value;
                 int alignmentOffset = GetXorAlignmentOffset(destination, 16, Vector128<T>.Count);
                 Vector128<T> beginning = default;
                 if (alignmentOffset != 0)
@@ -492,7 +570,7 @@ namespace System
                     }
                 }
 
-                while (destination.Length >= Vector128<T>.Count)
+                while (destination.Length > Vector128<T>.Count)
                 {
                     Span<T> block = destination.Slice(0, Vector128<T>.Count);
                     (Vector128.Create(block) ^ value).CopyTo(block);
@@ -505,11 +583,70 @@ namespace System
                     // overlap with its precomputed result rather than XORing it twice.
                     beginning.CopyTo(originalDestination);
                 }
+                ending.CopyTo(originalDestination.Slice(originalDestination.Length - Vector128<T>.Count));
+                return;
             }
 
             for (int i = 0; i < destination.Length; i++)
             {
                 destination[i] = destination[i] ^ y;
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void XorByteTail(ReadOnlySpan<byte> x, ReadOnlySpan<byte> y, Span<byte> destination)
+        {
+            int i = 0;
+            while (x.Length - i >= 8)
+            {
+                ulong result = (ulong)(MemoryMarshal.Read<ulong>(x.Slice(i)) ^ MemoryMarshal.Read<ulong>(y.Slice(i)));
+                MemoryMarshal.Write(destination.Slice(i), in result);
+                i += 8;
+            }
+            if (x.Length - i >= 4)
+            {
+                uint result = (uint)(MemoryMarshal.Read<uint>(x.Slice(i)) ^ MemoryMarshal.Read<uint>(y.Slice(i)));
+                MemoryMarshal.Write(destination.Slice(i), in result);
+                i += 4;
+            }
+            if (x.Length - i >= 2)
+            {
+                ushort result = (ushort)(MemoryMarshal.Read<ushort>(x.Slice(i)) ^ MemoryMarshal.Read<ushort>(y.Slice(i)));
+                MemoryMarshal.Write(destination.Slice(i), in result);
+                i += 2;
+            }
+            if (i < x.Length)
+            {
+                destination[i] = (byte)(x[i] ^ y[i]);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static void XorByteTail(ReadOnlySpan<byte> x, byte y, Span<byte> destination)
+        {
+            int i = 0;
+            ulong mask = 0x0101010101010101UL * y;
+            while (x.Length - i >= 8)
+            {
+                ulong result = (ulong)(MemoryMarshal.Read<ulong>(x.Slice(i)) ^ (ulong)mask);
+                MemoryMarshal.Write(destination.Slice(i), in result);
+                i += 8;
+            }
+            if (x.Length - i >= 4)
+            {
+                uint result = (uint)(MemoryMarshal.Read<uint>(x.Slice(i)) ^ (uint)mask);
+                MemoryMarshal.Write(destination.Slice(i), in result);
+                i += 4;
+            }
+            if (x.Length - i >= 2)
+            {
+                ushort result = (ushort)(MemoryMarshal.Read<ushort>(x.Slice(i)) ^ (ushort)mask);
+                MemoryMarshal.Write(destination.Slice(i), in result);
+                i += 2;
+            }
+            if (i < x.Length)
+            {
+                destination[i] = (byte)(x[i] ^ y);
             }
         }
 
