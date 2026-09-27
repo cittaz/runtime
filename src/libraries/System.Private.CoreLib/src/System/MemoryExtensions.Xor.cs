@@ -287,22 +287,30 @@ namespace System
                 while (destination.Length >= 8 * Vector512<T>.Count)
                 {
                     Span<T> block = destination.Slice(0, 8 * Vector512<T>.Count);
-                    Vector512<T> v0 = Vector512.Create(block) ^ value;
-                    Vector512<T> v1 = Vector512.Create(block.Slice(Vector512<T>.Count)) ^ value;
-                    Vector512<T> v2 = Vector512.Create(block.Slice(2 * Vector512<T>.Count)) ^ value;
-                    Vector512<T> v3 = Vector512.Create(block.Slice(3 * Vector512<T>.Count)) ^ value;
-                    Vector512<T> v4 = Vector512.Create(block.Slice(4 * Vector512<T>.Count)) ^ value;
-                    Vector512<T> v5 = Vector512.Create(block.Slice(5 * Vector512<T>.Count)) ^ value;
-                    Vector512<T> v6 = Vector512.Create(block.Slice(6 * Vector512<T>.Count)) ^ value;
-                    Vector512<T> v7 = Vector512.Create(block.Slice(7 * Vector512<T>.Count)) ^ value;
-                    v0.CopyTo(block);
-                    v1.CopyTo(block.Slice(Vector512<T>.Count));
-                    v2.CopyTo(block.Slice(2 * Vector512<T>.Count));
-                    v3.CopyTo(block.Slice(3 * Vector512<T>.Count));
-                    v4.CopyTo(block.Slice(4 * Vector512<T>.Count));
-                    v5.CopyTo(block.Slice(5 * Vector512<T>.Count));
-                    v6.CopyTo(block.Slice(6 * Vector512<T>.Count));
-                    v7.CopyTo(block.Slice(7 * Vector512<T>.Count));
+                    ref T blockStart = ref MemoryMarshal.GetReference(block);
+                    unsafe
+                    {
+                        // SAFETY: The checked slice contains eight complete vectors of a supported
+                        // primitive type. Each reference offset is 0..7 vector lengths, so every
+                        // load and store stays within the block. Managed references remain GC-tracked,
+                        // and LoadUnsafe/StoreUnsafe permit unaligned addresses after relocation.
+                        Vector512<T> v0 = Vector512.LoadUnsafe(ref blockStart) ^ value;
+                        Vector512<T> v1 = Vector512.LoadUnsafe(ref Unsafe.Add(ref blockStart, Vector512<T>.Count)) ^ value;
+                        Vector512<T> v2 = Vector512.LoadUnsafe(ref Unsafe.Add(ref blockStart, 2 * Vector512<T>.Count)) ^ value;
+                        Vector512<T> v3 = Vector512.LoadUnsafe(ref Unsafe.Add(ref blockStart, 3 * Vector512<T>.Count)) ^ value;
+                        Vector512<T> v4 = Vector512.LoadUnsafe(ref Unsafe.Add(ref blockStart, 4 * Vector512<T>.Count)) ^ value;
+                        Vector512<T> v5 = Vector512.LoadUnsafe(ref Unsafe.Add(ref blockStart, 5 * Vector512<T>.Count)) ^ value;
+                        Vector512<T> v6 = Vector512.LoadUnsafe(ref Unsafe.Add(ref blockStart, 6 * Vector512<T>.Count)) ^ value;
+                        Vector512<T> v7 = Vector512.LoadUnsafe(ref Unsafe.Add(ref blockStart, 7 * Vector512<T>.Count)) ^ value;
+                        v0.StoreUnsafe(ref blockStart);
+                        v1.StoreUnsafe(ref Unsafe.Add(ref blockStart, Vector512<T>.Count));
+                        v2.StoreUnsafe(ref Unsafe.Add(ref blockStart, 2 * Vector512<T>.Count));
+                        v3.StoreUnsafe(ref Unsafe.Add(ref blockStart, 3 * Vector512<T>.Count));
+                        v4.StoreUnsafe(ref Unsafe.Add(ref blockStart, 4 * Vector512<T>.Count));
+                        v5.StoreUnsafe(ref Unsafe.Add(ref blockStart, 5 * Vector512<T>.Count));
+                        v6.StoreUnsafe(ref Unsafe.Add(ref blockStart, 6 * Vector512<T>.Count));
+                        v7.StoreUnsafe(ref Unsafe.Add(ref blockStart, 7 * Vector512<T>.Count));
+                    }
                     destination = destination.Slice(8 * Vector512<T>.Count);
                 }
 
@@ -338,22 +346,30 @@ namespace System
                     while (destination.Length >= 8 * Vector256<T>.Count)
                     {
                         Span<T> block = destination.Slice(0, 8 * Vector256<T>.Count);
-                        Vector256<T> v0 = Vector256.Create(block) ^ value;
-                        Vector256<T> v1 = Vector256.Create(block.Slice(Vector256<T>.Count)) ^ value;
-                        Vector256<T> v2 = Vector256.Create(block.Slice(2 * Vector256<T>.Count)) ^ value;
-                        Vector256<T> v3 = Vector256.Create(block.Slice(3 * Vector256<T>.Count)) ^ value;
-                        Vector256<T> v4 = Vector256.Create(block.Slice(4 * Vector256<T>.Count)) ^ value;
-                        Vector256<T> v5 = Vector256.Create(block.Slice(5 * Vector256<T>.Count)) ^ value;
-                        Vector256<T> v6 = Vector256.Create(block.Slice(6 * Vector256<T>.Count)) ^ value;
-                        Vector256<T> v7 = Vector256.Create(block.Slice(7 * Vector256<T>.Count)) ^ value;
-                        v0.CopyTo(block);
-                        v1.CopyTo(block.Slice(Vector256<T>.Count));
-                        v2.CopyTo(block.Slice(2 * Vector256<T>.Count));
-                        v3.CopyTo(block.Slice(3 * Vector256<T>.Count));
-                        v4.CopyTo(block.Slice(4 * Vector256<T>.Count));
-                        v5.CopyTo(block.Slice(5 * Vector256<T>.Count));
-                        v6.CopyTo(block.Slice(6 * Vector256<T>.Count));
-                        v7.CopyTo(block.Slice(7 * Vector256<T>.Count));
+                        ref T blockStart = ref MemoryMarshal.GetReference(block);
+                        unsafe
+                        {
+                            // SAFETY: The checked slice contains eight complete vectors of a supported
+                            // primitive type. Each reference offset is 0..7 vector lengths, so every
+                            // load and store stays within the block. Managed references remain GC-tracked,
+                            // and LoadUnsafe/StoreUnsafe permit unaligned addresses after relocation.
+                            Vector256<T> v0 = Vector256.LoadUnsafe(ref blockStart) ^ value;
+                            Vector256<T> v1 = Vector256.LoadUnsafe(ref Unsafe.Add(ref blockStart, Vector256<T>.Count)) ^ value;
+                            Vector256<T> v2 = Vector256.LoadUnsafe(ref Unsafe.Add(ref blockStart, 2 * Vector256<T>.Count)) ^ value;
+                            Vector256<T> v3 = Vector256.LoadUnsafe(ref Unsafe.Add(ref blockStart, 3 * Vector256<T>.Count)) ^ value;
+                            Vector256<T> v4 = Vector256.LoadUnsafe(ref Unsafe.Add(ref blockStart, 4 * Vector256<T>.Count)) ^ value;
+                            Vector256<T> v5 = Vector256.LoadUnsafe(ref Unsafe.Add(ref blockStart, 5 * Vector256<T>.Count)) ^ value;
+                            Vector256<T> v6 = Vector256.LoadUnsafe(ref Unsafe.Add(ref blockStart, 6 * Vector256<T>.Count)) ^ value;
+                            Vector256<T> v7 = Vector256.LoadUnsafe(ref Unsafe.Add(ref blockStart, 7 * Vector256<T>.Count)) ^ value;
+                            v0.StoreUnsafe(ref blockStart);
+                            v1.StoreUnsafe(ref Unsafe.Add(ref blockStart, Vector256<T>.Count));
+                            v2.StoreUnsafe(ref Unsafe.Add(ref blockStart, 2 * Vector256<T>.Count));
+                            v3.StoreUnsafe(ref Unsafe.Add(ref blockStart, 3 * Vector256<T>.Count));
+                            v4.StoreUnsafe(ref Unsafe.Add(ref blockStart, 4 * Vector256<T>.Count));
+                            v5.StoreUnsafe(ref Unsafe.Add(ref blockStart, 5 * Vector256<T>.Count));
+                            v6.StoreUnsafe(ref Unsafe.Add(ref blockStart, 6 * Vector256<T>.Count));
+                            v7.StoreUnsafe(ref Unsafe.Add(ref blockStart, 7 * Vector256<T>.Count));
+                        }
                         destination = destination.Slice(8 * Vector256<T>.Count);
                     }
                 }
@@ -390,22 +406,30 @@ namespace System
                     while (destination.Length >= 8 * Vector128<T>.Count)
                     {
                         Span<T> block = destination.Slice(0, 8 * Vector128<T>.Count);
-                        Vector128<T> v0 = Vector128.Create(block) ^ value;
-                        Vector128<T> v1 = Vector128.Create(block.Slice(Vector128<T>.Count)) ^ value;
-                        Vector128<T> v2 = Vector128.Create(block.Slice(2 * Vector128<T>.Count)) ^ value;
-                        Vector128<T> v3 = Vector128.Create(block.Slice(3 * Vector128<T>.Count)) ^ value;
-                        Vector128<T> v4 = Vector128.Create(block.Slice(4 * Vector128<T>.Count)) ^ value;
-                        Vector128<T> v5 = Vector128.Create(block.Slice(5 * Vector128<T>.Count)) ^ value;
-                        Vector128<T> v6 = Vector128.Create(block.Slice(6 * Vector128<T>.Count)) ^ value;
-                        Vector128<T> v7 = Vector128.Create(block.Slice(7 * Vector128<T>.Count)) ^ value;
-                        v0.CopyTo(block);
-                        v1.CopyTo(block.Slice(Vector128<T>.Count));
-                        v2.CopyTo(block.Slice(2 * Vector128<T>.Count));
-                        v3.CopyTo(block.Slice(3 * Vector128<T>.Count));
-                        v4.CopyTo(block.Slice(4 * Vector128<T>.Count));
-                        v5.CopyTo(block.Slice(5 * Vector128<T>.Count));
-                        v6.CopyTo(block.Slice(6 * Vector128<T>.Count));
-                        v7.CopyTo(block.Slice(7 * Vector128<T>.Count));
+                        ref T blockStart = ref MemoryMarshal.GetReference(block);
+                        unsafe
+                        {
+                            // SAFETY: The checked slice contains eight complete vectors of a supported
+                            // primitive type. Each reference offset is 0..7 vector lengths, so every
+                            // load and store stays within the block. Managed references remain GC-tracked,
+                            // and LoadUnsafe/StoreUnsafe permit unaligned addresses after relocation.
+                            Vector128<T> v0 = Vector128.LoadUnsafe(ref blockStart) ^ value;
+                            Vector128<T> v1 = Vector128.LoadUnsafe(ref Unsafe.Add(ref blockStart, Vector128<T>.Count)) ^ value;
+                            Vector128<T> v2 = Vector128.LoadUnsafe(ref Unsafe.Add(ref blockStart, 2 * Vector128<T>.Count)) ^ value;
+                            Vector128<T> v3 = Vector128.LoadUnsafe(ref Unsafe.Add(ref blockStart, 3 * Vector128<T>.Count)) ^ value;
+                            Vector128<T> v4 = Vector128.LoadUnsafe(ref Unsafe.Add(ref blockStart, 4 * Vector128<T>.Count)) ^ value;
+                            Vector128<T> v5 = Vector128.LoadUnsafe(ref Unsafe.Add(ref blockStart, 5 * Vector128<T>.Count)) ^ value;
+                            Vector128<T> v6 = Vector128.LoadUnsafe(ref Unsafe.Add(ref blockStart, 6 * Vector128<T>.Count)) ^ value;
+                            Vector128<T> v7 = Vector128.LoadUnsafe(ref Unsafe.Add(ref blockStart, 7 * Vector128<T>.Count)) ^ value;
+                            v0.StoreUnsafe(ref blockStart);
+                            v1.StoreUnsafe(ref Unsafe.Add(ref blockStart, Vector128<T>.Count));
+                            v2.StoreUnsafe(ref Unsafe.Add(ref blockStart, 2 * Vector128<T>.Count));
+                            v3.StoreUnsafe(ref Unsafe.Add(ref blockStart, 3 * Vector128<T>.Count));
+                            v4.StoreUnsafe(ref Unsafe.Add(ref blockStart, 4 * Vector128<T>.Count));
+                            v5.StoreUnsafe(ref Unsafe.Add(ref blockStart, 5 * Vector128<T>.Count));
+                            v6.StoreUnsafe(ref Unsafe.Add(ref blockStart, 6 * Vector128<T>.Count));
+                            v7.StoreUnsafe(ref Unsafe.Add(ref blockStart, 7 * Vector128<T>.Count));
+                        }
                         destination = destination.Slice(8 * Vector128<T>.Count);
                     }
                 }
@@ -443,7 +467,7 @@ namespace System
             {
                 // SAFETY: The nonempty span supplies a live managed reference. The vector
                 // width is a power of two. Only address bits are observed, never dereferenced.
-                // All subsequent accesses remain checked, unaligned-capable span operations,
+                // Subsequent accesses are bounds-validated and tolerate unaligned addresses,
                 // so correctness does not depend on the hint surviving a GC relocation.
                 nuint misalignment = Unsafe.OpportunisticMisalignment(ref MemoryMarshal.GetReference(destination), (nuint)vectorByteCount);
                 nuint elementSize = (nuint)(vectorByteCount / vectorElementCount);
