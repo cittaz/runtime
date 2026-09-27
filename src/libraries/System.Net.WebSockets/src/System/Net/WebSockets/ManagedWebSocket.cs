@@ -685,17 +685,19 @@ namespace System.Net.WebSockets
             // Write the payload
             if (payloadBuffer.Length > 0)
             {
-                payloadBuffer.CopyTo(new Span<byte>(_sendBuffer, headerLength, payloadLength));
-
-                // Release the deflater buffer if any, we're not going to need the payloadBuffer anymore.
-                _deflater?.ReleaseBuffer();
-
-                // If we added a mask to the header, XOR the payload with the mask.  We do the manipulation in the send buffer so as to avoid
-                // changing the data in the caller-supplied payload buffer.
+                Span<byte> destination = new Span<byte>(_sendBuffer, headerLength, payloadLength);
                 if (maskOffset.HasValue)
                 {
-                    ApplyMask(new Span<byte>(_sendBuffer, headerLength, payloadLength), _sendBuffer, maskOffset.Value, 0);
+                    // Copy and mask in one pass without changing the caller-supplied payload.
+                    CopyAndMask(payloadBuffer, destination, CombineMaskBytes(_sendBuffer, maskOffset.Value), 0);
                 }
+                else
+                {
+                    payloadBuffer.CopyTo(destination);
+                }
+
+                // Release the deflater buffer only after we're done reading the payloadBuffer.
+                _deflater?.ReleaseBuffer();
             }
 
             // Return the number of bytes in the send buffer
@@ -1675,64 +1677,37 @@ namespace System.Net.WebSockets
 
         /// <summary>Applies a mask to a portion of a byte array.</summary>
         /// <param name="toMask">The buffer to which the mask should be applied.</param>
-        /// <param name="mask">The array containing the mask to apply.</param>
-        /// <param name="maskOffset">The offset into <paramref name="mask"/> of the mask to apply of length <see cref="MaskLength"/>.</param>
-        /// <param name="maskOffsetIndex">The next position offset from <paramref name="maskOffset"/> of which by to apply next from the mask.</param>
-        /// <returns>The updated maskOffsetOffset value.</returns>
-        private static int ApplyMask(Span<byte> toMask, byte[] mask, int maskOffset, int maskOffsetIndex)
-        {
-            Debug.Assert(maskOffsetIndex < MaskLength, $"Unexpected {nameof(maskOffsetIndex)}: {maskOffsetIndex}");
-            Debug.Assert(mask.Length >= MaskLength + maskOffset, $"Unexpected inputs: {mask.Length}, {maskOffset}");
-            return ApplyMask(toMask, CombineMaskBytes(mask, maskOffset), maskOffsetIndex);
-        }
-
-        /// <summary>Applies a mask to a portion of a byte array.</summary>
-        /// <param name="toMask">The buffer to which the mask should be applied.</param>
         /// <param name="mask">The four-byte mask, stored as an Int32.</param>
         /// <param name="maskIndex">The index into the mask.</param>
         /// <returns>The next index into the mask to be used for future applications of the mask.</returns>
-        private static unsafe int ApplyMask(Span<byte> toMask, int mask, int maskIndex)
+        private static int ApplyMask(Span<byte> toMask, int mask, int maskIndex) =>
+            CopyAndMask(toMask, toMask, mask, maskIndex);
+
+        /// <summary>Copies and masks a payload, supporting both in-place and separate destinations.</summary>
+        /// <returns>The next mask index to use when processing the same frame.</returns>
+        private static int CopyAndMask(ReadOnlySpan<byte> source, Span<byte> destination, int mask, int maskIndex)
         {
             Debug.Assert(maskIndex < sizeof(int));
+            Debug.Assert(source.Length == destination.Length);
 
-            fixed (byte* toMaskBeg = &MemoryMarshal.GetReference(toMask))
+            if (source.Length >= sizeof(int))
             {
-                byte* toMaskPtr = toMaskBeg;
-                byte* toMaskEnd = toMaskBeg + toMask.Length;
+                int rolledMask = BitConverter.IsLittleEndian ?
+                    (int)BitOperations.RotateRight((uint)mask, maskIndex * 8) :
+                    (int)BitOperations.RotateLeft((uint)mask, maskIndex * 8);
 
-                if (toMaskEnd - toMaskPtr >= sizeof(int))
-                {
-                    int rolledMask = BitConverter.IsLittleEndian ?
-                        (int)BitOperations.RotateRight((uint)mask, maskIndex * 8) :
-                        (int)BitOperations.RotateLeft((uint)mask, maskIndex * 8);
+                ReadOnlySpan<int> words = MemoryMarshal.Cast<byte, int>(source);
+                MemoryExtensions.Xor(words, rolledMask, MemoryMarshal.Cast<byte, int>(destination));
+                source = source.Slice(words.Length * sizeof(int));
+                destination = destination.Slice(words.Length * sizeof(int));
+            }
 
-                    // Process Vector<byte>.Count bytes at a time.
-                    if (Vector.IsHardwareAccelerated && (toMaskEnd - toMaskPtr) >= Vector<byte>.Count)
-                    {
-                        Vector<byte> maskVector = Vector.AsVectorByte(new Vector<int>(rolledMask));
-                        do
-                        {
-                            *(Vector<byte>*)toMaskPtr ^= maskVector;
-                            toMaskPtr += Vector<byte>.Count;
-                        }
-                        while (toMaskEnd - toMaskPtr >= Vector<byte>.Count);
-                    }
-
-                    // Process 4 bytes at a time.
-                    while (toMaskEnd - toMaskPtr >= sizeof(int))
-                    {
-                        *(int*)toMaskPtr ^= rolledMask;
-                        toMaskPtr += sizeof(int);
-                    }
-                }
-
-                // Process 1 byte at a time.
-                byte* maskPtr = (byte*)&mask;
-                while (toMaskPtr != toMaskEnd)
-                {
-                    *toMaskPtr++ ^= maskPtr[maskIndex];
-                    maskIndex = (maskIndex + 1) & 3;
-                }
+            // The whole words above preserve the mask index. Process the final zero to three bytes.
+            for (int i = 0; i < source.Length; i++)
+            {
+                int shift = BitConverter.IsLittleEndian ? maskIndex * 8 : (3 - maskIndex) * 8;
+                destination[i] = (byte)(source[i] ^ (mask >> shift));
+                maskIndex = (maskIndex + 1) & 3;
             }
 
             return maskIndex;
